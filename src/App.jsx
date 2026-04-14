@@ -13,23 +13,27 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import CourtView from "@/components/CourtView";
+import { colors, getDisplayModeFromSlot, zoneColors } from "@/lib/courtViewUtils";
+import {
+  getCourtPlayersForPattern,
+  getDisplayPattern,
+  getDisplayPlayers,
+} from "@/lib/formationDisplay";
 import { cn } from "@/lib/utils";
 import {
-  Save,
-  Upload,
   PencilLine,
   Move,
   Undo2,
   Trash2,
-  RefreshCcw,
   Users,
   Eye,
   EyeOff,
 } from "lucide-react";
+import { supabase } from "./lib/supabase";
 
 const COURT_W = 620;
 const COURT_H = 620;
-const COURT_INSET = 40;
 
 const rotationOptions = [
   { key: "R1", label: "ローテ1" },
@@ -51,19 +55,6 @@ const patternOptions = [
 
 const positions = ["S", "L", "C", "R", "Li"];
 const STORAGE_KEY = "volleyball-tactics-board-data-v1";
-
-const colors = {
-  front: "bg-orange-400 border-orange-500 text-white",
-  back: "bg-sky-300 border-sky-400 text-slate-900",
-  libero: "bg-pink-300 border-pink-400 text-slate-900",
-  bench: "bg-white border-slate-300 text-slate-900",
-};
-
-const arrowStroke = {
-  normal: { color: "#2563eb", dash: "0", width: 4 },
-  attack: { color: "#dc2626", dash: "0", width: 5 },
-  dotted: { color: "#7c3aed", dash: "10 8", width: 4 },
-};
 
 const receiveOverlayModes = [
   { key: "attackOnly", label: "攻撃矢印" },
@@ -318,14 +309,6 @@ const initialOwnTeamMaster = [
   },
 ];
 
-function getDisplayModeFromSlot(player, slotAssignments) {
-  if (player.position === "Li") return "libero";
-
-  const slotKey = slotAssignments?.[player.id];
-  if (slotKey === "LF" || slotKey === "CF" || slotKey === "RF") return "front";
-  return "back";
-}
-
 const baseCourtLayout = {
   p4: { x: 130, y: 200 }, // 左前
   p3: { x: 310, y: 200 }, // 中前
@@ -353,13 +336,6 @@ const serveOrderToSlot = {
   4: "LF",
   5: "LB",
   6: "CB",
-};
-
-const zoneColors = {
-  zone1: { fill: "rgba(59, 130, 246, 0.20)", stroke: "#3b82f6", label: "青" },
-  zone2: { fill: "rgba(239, 68, 68, 0.20)", stroke: "#ef4444", label: "赤" },
-  zone3: { fill: "rgba(34, 197, 94, 0.20)", stroke: "#22c55e", label: "緑" },
-  zone4: { fill: "rgba(234, 179, 8, 0.20)", stroke: "#eab308", label: "黄" },
 };
 
 function clone(obj) {
@@ -538,13 +514,6 @@ function getPointFromEvent(event, element) {
   };
 }
 
-function formatTempoLabel(tempo) {
-  if (tempo === "open") return "オープン";
-  if (tempo === "semi") return "セミ";
-  if (tempo === "quick") return "クイック";
-  return "";
-}
-
 function getRotationIndex(rotationKey) {
   const map = {
     R1: 0,
@@ -693,10 +662,13 @@ function syncPatternWithMatchSetup(currentPattern, matchSetup, rotationKey, patt
 }
 
 export default function VolleyballTacticsBoardApp() {
-  const fileInputRef = useRef(null);
   const courtRef = useRef(null);
 
   const [data, setData] = useState(() => loadInitialData());
+  const [cloudTitle, setCloudTitle] = useState("");
+  const [cloudFormations, setCloudFormations] = useState([]);
+  const [selectedCloudFormationId, setSelectedCloudFormationId] = useState("");
+  const [isCloudLoading, setIsCloudLoading] = useState(false);
   const [selectedPlayerId, setSelectedPlayerId] = useState("p1");
   const [interactionMode, setInteractionMode] = useState("move");
   const [arrowType, setArrowType] = useState("normal");
@@ -742,30 +714,17 @@ export default function VolleyballTacticsBoardApp() {
   }, [isBasicPattern, data.selectedRotation, data.matchSetup]);
 
   const currentPattern =
-    data.selectedPattern === "basic"
-      ? basicDraftPattern
-      : data.rotations[data.selectedRotation][data.selectedPattern];
+    getDisplayPattern(data, data.selectedRotation, data.selectedPattern) ||
+    basicDraftPattern;
   const currentRotation = data.rotations[data.selectedRotation];
   const currentRotationMemo = currentRotation?.memo || "";
 
-  const players = currentPattern.players;
   const coordinates = currentPattern.coordinates;
   const slotAssignments = currentPattern.slotAssignments || {};
 
   const zones = currentPattern.zones || [];
 
-  const displayPlayers = players.map((player) => {
-    const master = data.ownTeamMaster.find((m) => m.id === player.id);
-    if (!master) return player;
-
-    return {
-      ...player,
-      name: master.name,
-      shortName: master.shortName,
-      number: master.number,
-      position: master.position,
-    };
-  });
+  const displayPlayers = getDisplayPlayers(data, currentPattern);
 
   const matchSetup = data.matchSetup;
   const liberoTargets = matchSetup.liberoTargets || [];
@@ -778,13 +737,8 @@ export default function VolleyballTacticsBoardApp() {
   const selectedMasterPlayer =
     data.ownTeamMaster.find((p) => p.id === selectedPlayerId) || null;
 
-  const courtPlayerIds = new Set(
-    displayPlayers.filter((p) => p.court).map((p) => p.id),
-  );
-
-  const courtPlayers = data.ownTeamMaster.filter((p) =>
-    courtPlayerIds.has(p.id),
-  );
+  const courtPlayers = getCourtPlayersForPattern(data, currentPattern);
+  const courtPlayerIds = new Set(courtPlayers.map((p) => p.id));
 
   const liberoBenchPlayers = data.ownTeamMaster.filter(
     (p) => !courtPlayerIds.has(p.id) && liberoTargets.includes(p.id),
@@ -1041,18 +995,6 @@ export default function VolleyballTacticsBoardApp() {
     setArrowDraftStart(null);
   };
 
-  const resetCurrentPattern = () => {
-    updateCurrentPattern((target) => {
-      const fresh = makePatternState();
-      target.players = fresh.players;
-      target.coordinates = fresh.coordinates;
-      target.arrows = fresh.arrows;
-      target.note = "";
-    });
-    setSelectedBenchId(null);
-    setArrowDraftStart(null);
-  };
-
   const handleSelectBench = (benchId) => {
     if (isBasicPattern) return;
     setSelectedBenchId((prev) => (prev === benchId ? null : benchId));
@@ -1099,25 +1041,93 @@ export default function VolleyballTacticsBoardApp() {
     setArrowDraftStart(null);
   };
 
-  const exportJson = () => {
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `volleyball-board-${data.teamName || "team"}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const importJson = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const saveToSupabase = async () => {
+    const title = cloudTitle.trim();
+    if (!title) {
+      alert("保存名を入力してください");
+      return;
+    }
 
     try {
-      const text = await file.text();
-      const parsed = JSON.parse(text);
+      const { data: existing, error: selectError } = await supabase
+        .from("formations")
+        .select("id")
+        .eq("title", title)
+        .limit(1);
+
+      if (selectError) throw selectError;
+
+      if (existing && existing.length > 0) {
+        const { error: updateError } = await supabase
+          .from("formations")
+          .update({
+            data,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existing[0].id);
+
+        if (updateError) throw updateError;
+
+        alert("クラウド保存を更新しました");
+      } else {
+        const { error: insertError } = await supabase.from("formations").insert([
+          {
+            title,
+            data,
+            updated_at: new Date().toISOString(),
+          },
+        ]);
+
+        if (insertError) throw insertError;
+
+        alert("クラウド保存しました");
+      }
+    } catch (error) {
+      console.error("Supabase保存エラー", error);
+      alert("クラウド保存に失敗しました");
+    }
+  };
+
+  const loadCloudFormations = async () => {
+    setIsCloudLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("formations")
+        .select("id, title, updated_at")
+        .order("updated_at", { ascending: false });
+
+      if (error) throw error;
+
+      setCloudFormations(data || []);
+    } catch (error) {
+      console.error("クラウド一覧取得エラー", error);
+      alert("クラウド一覧の取得に失敗しました");
+    } finally {
+      setIsCloudLoading(false);
+    }
+  };
+
+  const loadFromSupabase = async () => {
+    if (!selectedCloudFormationId) {
+      alert("読み込むフォーメーションを選択してください");
+      return;
+    }
+
+    try {
+      const { data: row, error } = await supabase
+        .from("formations")
+        .select("data")
+        .eq("id", selectedCloudFormationId)
+        .single();
+
+      if (error) throw error;
+
+      const parsed = row?.data;
+      if (!parsed) {
+        alert("データが見つかりませんでした");
+        return;
+      }
+
       const initial = makeInitialData();
 
       const savedMaster = Array.isArray(parsed.ownTeamMaster)
@@ -1148,79 +1158,77 @@ export default function VolleyballTacticsBoardApp() {
       setData(mergedData);
 
       const selectedId =
-        mergedData.ownTeamMaster.find((p) => p.id === selectedPlayerId)?.id ||
-        mergedData.ownTeamMaster[0]?.id ||
+        mergedOwnTeamMaster.find((p) => p.id === selectedPlayerId)?.id ||
+        mergedOwnTeamMaster[0]?.id ||
         "p1";
 
       setSelectedPlayerId(selectedId);
       setSelectedBenchId(null);
       setArrowDraftStart(null);
+
+      alert("クラウドから読み込みました");
     } catch (error) {
-      console.error("JSON読込に失敗しました", error);
-      alert("JSONファイルの読み込みに失敗しました");
-    } finally {
-      event.target.value = "";
+      console.error("クラウド読込エラー", error);
+      alert("クラウド読込に失敗しました");
     }
   };
-  const renderArrow = (arrow) => {
-    const style = arrowStroke[arrow.type];
-    const dx = arrow.end.x - arrow.start.x;
-    const dy = arrow.end.y - arrow.start.y;
-    const len = Math.max(1, Math.hypot(dx, dy));
-    const ux = dx / len;
-    const uy = dy / len;
-    const headLen = 16;
-    const headW = 8;
-    const hx = arrow.end.x - ux * headLen;
-    const hy = arrow.end.y - uy * headLen;
-    const leftX = hx - uy * headW;
-    const leftY = hy + ux * headW;
-    const rightX = hx + uy * headW;
-    const rightY = hy - ux * headW;
-    const labelX = (arrow.start.x + arrow.end.x) / 2;
-    const labelY = (arrow.start.y + arrow.end.y) / 2 - 12;
 
-    return (
-      <g key={arrow.id}>
-        <line
-          x1={arrow.start.x}
-          y1={arrow.start.y}
-          x2={arrow.end.x}
-          y2={arrow.end.y}
-          stroke={style.color}
-          strokeWidth={style.width}
-          strokeDasharray={style.dash}
-          strokeLinecap="round"
-        />
-        <polygon
-          points={`${arrow.end.x},${arrow.end.y} ${leftX},${leftY} ${rightX},${rightY}`}
-          fill={style.color}
-        />
-        {arrow.type === "attack" && arrow.tempo && (
-          <g>
-            <rect
-              x={labelX - 28}
-              y={labelY - 12}
-              width="56"
-              height="22"
-              rx="11"
-              fill="white"
-              opacity="0.92"
-            />
-            <text
-              x={labelX}
-              y={labelY + 4}
-              textAnchor="middle"
-              fontSize="11"
-              fontWeight="700"
-              fill="#991b1b"
-            >
-              {formatTempoLabel(arrow.tempo)}
-            </text>
-          </g>
-        )}
-      </g>
-    );
+  const deleteFromSupabase = async () => {
+    if (!selectedCloudFormationId) {
+      alert("削除するフォーメーションを選択してください");
+      return;
+    }
+
+    if (!confirm("削除してもよろしいですか？")) return;
+
+    try {
+      const { error } = await supabase
+        .from("formations")
+        .delete()
+        .eq("id", selectedCloudFormationId);
+
+      if (error) throw error;
+
+      alert("削除しました");
+
+      await loadCloudFormations();
+      setSelectedCloudFormationId("");
+    } catch (error) {
+      console.error("削除エラー", error);
+      alert("削除に失敗しました");
+    }
+  };
+
+  const renameSupabase = async () => {
+    const title = cloudTitle.trim();
+    if (!selectedCloudFormationId) {
+      alert("対象を選択してください");
+      return;
+    }
+
+    if (!title) {
+      alert("新しい名前を入力してください");
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from("formations")
+        .update({
+          title,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", selectedCloudFormationId);
+
+      if (error) throw error;
+
+      alert("名前を変更しました");
+
+      await loadCloudFormations();
+    } catch (error) {
+      console.error("名前変更エラー", error);
+      alert("名前変更に失敗しました");
+    }
   };
 
   return (
@@ -1328,48 +1336,53 @@ export default function VolleyballTacticsBoardApp() {
         <div className="space-y-4">
           <Card className="rounded-3xl shadow-sm">
             <CardContent className="space-y-4 p-4 md:p-5">
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  variant={data.displayMode === "half" ? "default" : "outline"}
-                  onClick={() =>
-                    setData((prev) => ({ ...prev, displayMode: "half" }))
-                  }
-                >
-                  半面
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Input
+                  value={cloudTitle}
+                  onChange={(e) => setCloudTitle(e.target.value)}
+                  placeholder="クラウド保存名"
+                  className="h-10 w-[180px] bg-white"
+                />
+                <Button variant="outline" onClick={saveToSupabase}>
+                  クラウド保存
+                </Button>
+                <Button variant="outline" onClick={renameSupabase}>
+                  名前変更
                 </Button>
                 <Button
-                  variant={data.displayMode === "full" ? "default" : "outline"}
-                  onClick={() =>
-                    setData((prev) => ({ ...prev, displayMode: "full" }))
-                  }
+                  variant="outline"
+                  onClick={loadCloudFormations}
+                  disabled={isCloudLoading}
                 >
-                  全面（仮）
+                  {isCloudLoading ? "取得中..." : "クラウド一覧取得"}
                 </Button>
+                <select
+                  value={selectedCloudFormationId}
+                  onChange={(e) => setSelectedCloudFormationId(e.target.value)}
+                  className="h-10 w-[210px] rounded-md border border-slate-300 bg-white px-3 text-sm"
+                >
+                  <option value="">クラウド保存を選択</option>
+                  {cloudFormations.map((item) => {
+                    const d = new Date(item.updated_at);
+                    const formatted =
+                      `${(d.getMonth() + 1).toString().padStart(2, "0")}/` +
+                      `${d.getDate().toString().padStart(2, "0")} ` +
+                      `${d.getHours().toString().padStart(2, "0")}:` +
+                      `${d.getMinutes().toString().padStart(2, "0")}`;
 
-                <div className="ml-auto flex flex-wrap gap-2">
-                  <Button variant="outline" onClick={resetCurrentPattern}>
-                    <RefreshCcw className="mr-2 h-4 w-4" />
-                    現在パターン初期化
-                  </Button>
-                  <Button variant="outline" onClick={exportJson}>
-                    <Save className="mr-2 h-4 w-4" />
-                    保存
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Upload className="mr-2 h-4 w-4" />
-                    読込
-                  </Button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".json,application/json"
-                    className="hidden"
-                    onChange={importJson}
-                  />
-                </div>
+                    return (
+                      <option key={item.id} value={item.id}>
+                        {item.title}（{formatted}）
+                      </option>
+                    );
+                  })}
+                </select>
+                <Button variant="outline" onClick={loadFromSupabase}>
+                  クラウド読込
+                </Button>
+                <Button variant="outline" onClick={deleteFromSupabase}>
+                  削除
+                </Button>
               </div>
 
               <div className="grid gap-3 xl:grid-cols-[1fr_auto] xl:items-center">
@@ -1591,161 +1604,29 @@ export default function VolleyballTacticsBoardApp() {
                   </div>
                 )}
 
-                <div
-                  ref={courtRef}
-                  className="relative select-none overflow-hidden rounded-none border-4 border-emerald-700 bg-emerald-100"
-                  style={{
-                    width: "100%",
-                    maxWidth: COURT_W,
-                    aspectRatio: `${COURT_W} / ${COURT_H}`,
-                  }}
+                <CourtView
+                  courtRef={courtRef}
+                  courtPlayers={courtPlayers}
+                  coordinates={coordinates}
+                  slotAssignments={slotAssignments}
+                  visibleArrows={visibleArrows}
+                  zones={zones}
+                  arrowDraftStart={arrowDraftStart}
+                  zoneDraftPoints={zoneDraftPoints}
+                  selectedZoneColor={selectedZoneColor}
+                  showFullDisplayNotice={data.displayMode === "full"}
+                  className="select-none rounded-none border-emerald-700"
                   onPointerMove={handlePointerMoveCourt}
                   onPointerUp={handlePointerUpCourt}
                   onPointerLeave={handlePointerUpCourt}
-                  onClick={handleCourtClick}
-                >
-                  <svg
-                    viewBox={`0 0 ${COURT_W} ${COURT_H}`}
-                    className="absolute inset-0 h-full w-full"
-                  >
-                    <rect
-                      x="0"
-                      y="0"
-                      width={COURT_W}
-                      height={COURT_H}
-                      fill="#7FBF9A"
-                    />
-
-                    <rect
-                      x={COURT_INSET}
-                      y={COURT_INSET}
-                      width={COURT_W - COURT_INSET * 2}
-                      height={COURT_H - COURT_INSET * 2}
-                      fill="#DCC48E"
-                      stroke="#ffffff"
-                      strokeWidth="6"
-                    />
-
-                    {/* 半面表示のネット線（上辺） */}
-                    <line
-                      x1={COURT_INSET}
-                      y1={COURT_INSET}
-                      x2={COURT_W - COURT_INSET}
-                      y2={COURT_INSET}
-                      stroke="#ffffff"
-                      strokeWidth="8"
-                    />
-
-                    {/* 半面表示のアタックライン（ネットから3m） */}
-                    <line
-                      x1={COURT_INSET}
-                      y1={COURT_INSET + (COURT_H - COURT_INSET * 2) / 3}
-                      x2={COURT_W - COURT_INSET}
-                      y2={COURT_INSET + (COURT_H - COURT_INSET * 2) / 3}
-                      stroke="#ffffff"
-                      strokeWidth="5"
-                      opacity="0.9"
-                    />
-
-                    {visibleArrows.map(renderArrow)}
-
-                    {arrowDraftStart && (
-                      <circle
-                        cx={arrowDraftStart.x}
-                        cy={arrowDraftStart.y}
-                        r="10"
-                        fill="#111827"
-                        opacity="0.7"
-                      />
-                    )}
-
-                    {zones.map((zone) => {
-                      const color = zoneColors[zone.colorKey];
-                      return (
-                        <polygon
-                          key={zone.id}
-                          points={zone.points
-                            .map((p) => `${p.x},${p.y}`)
-                            .join(" ")}
-                          fill={color.fill}
-                          stroke={color.stroke}
-                          strokeWidth="2"
-                        />
-                      );
-                    })}
-
-                    {zoneDraftPoints.length >= 2 && (
-                      <polyline
-                        points={zoneDraftPoints
-                          .map((p) => `${p.x},${p.y}`)
-                          .join(" ")}
-                        fill="none"
-                        stroke={zoneColors[selectedZoneColor].stroke}
-                        strokeWidth="2"
-                        strokeDasharray="6 4"
-                      />
-                    )}
-
-                    {zoneDraftPoints.map((p, index) => (
-                      <circle
-                        key={`draft-point-${index}`}
-                        cx={p.x}
-                        cy={p.y}
-                        r="5"
-                        fill={zoneColors[selectedZoneColor].stroke}
-                      />
-                    ))}
-                  </svg>
-
-                  {courtPlayers.map((player) => {
-                    const point = coordinates[player.id] || { x: 100, y: 100 };
-                    const displayMode = getDisplayModeFromSlot(
-                      player,
-                      slotAssignments,
-                    );
-
-                    return (
-                      <button
-                        key={player.id}
-                        type="button"
-                        className="absolute -translate-x-1/2 -translate-y-1/2"
-                        style={{
-                          left: `${(point.x / COURT_W) * 100}%`,
-                          top: `${(point.y / COURT_H) * 100}%`,
-                        }}
-                        onPointerDown={(e) =>
-                          handlePointerDownPlayer(e, player.id)
-                        }
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedPlayerId(player.id);
-                          handleTapCourtPlayerForSub(player.id);
-                        }}
-                      >
-                        <div
-                          className={cn(
-                            "flex h-20 w-20 flex-col items-center justify-center rounded-full border-[3px] shadow-lg transition",
-                            colors[displayMode],
-                          )}
-                        >
-                          <div className="text-3xl font-black leading-none">
-                            {player.shortName}
-                          </div>
-                        </div>
-                        <div className="mt-1 rounded-xl bg-white/90 px-2 py-1 text-center text-xs font-medium shadow-sm">
-                          #{player.number} / {player.position}
-                        </div>
-                      </button>
-                    );
-                  })}
-
-
-                  {data.displayMode === "full" && (
-                    <div className="absolute right-4 top-4 rounded-xl bg-white/90 px-3 py-2 text-sm font-medium text-slate-600 shadow">
-                      全面表示は次段階で実装予定
-                    </div>
-                  )}
-                </div>
+                  onCourtClick={handleCourtClick}
+                  onPlayerPointerDown={handlePointerDownPlayer}
+                  onPlayerClick={(event, playerId) => {
+                    event.stopPropagation();
+                    setSelectedPlayerId(playerId);
+                    handleTapCourtPlayerForSub(playerId);
+                  }}
+                />
 
                 <div className="rounded-2xl border border-slate-200 bg-white p-4">
                   <div className="mb-2 text-sm font-semibold text-slate-700">
