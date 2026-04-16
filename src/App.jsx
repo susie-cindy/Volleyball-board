@@ -692,9 +692,6 @@ export default function VolleyballTacticsBoardApp() {
     ),
   );
 
-  // 交代管理を選手ベースに変更: keyは交代選手のID, valueは元の選手のID
-  const [substitutions, setSubstitutions] = useState({});
-
   const isBasicPattern = data.selectedPattern === "basic";
 
   // ①基本はローテ/パターン切替時にテンプレ配置へ戻したいので、
@@ -1023,44 +1020,8 @@ export default function VolleyballTacticsBoardApp() {
       delete target.coordinates[court.id];
     });
 
-    // 選手ベースで交代記録: 交代選手ID -> 元の選手ID
-    setSubstitutions((prev) => ({
-      ...prev,
-      [selectedBenchId]: courtPlayerId,
-    }));
-
     setSelectedPlayerId(selectedBenchId);
     setSelectedBenchId(null);
-  };
-
-  // 「元に戻す」機能: 選手ベースで判定・実行
-  const handleUndoSubstitution = () => {
-    const originalId = substitutions[selectedPlayerId];
-    if (!originalId) return;
-
-    updateCurrentPattern((target) => {
-      const substitutePlayer = target.players.find((p) => p.id === selectedPlayerId);
-      const originalPlayer = target.players.find((p) => p.id === originalId);
-      if (!substitutePlayer || !originalPlayer) return;
-
-      // 現在の位置で元の選手に戻す
-      substitutePlayer.court = false;
-      originalPlayer.court = true;
-
-      target.coordinates[originalId] = { ...target.coordinates[selectedPlayerId] };
-      delete target.coordinates[selectedPlayerId];
-
-      target.slotAssignments[originalId] = target.slotAssignments[selectedPlayerId];
-      delete target.slotAssignments[selectedPlayerId];
-    });
-
-    setSubstitutions((prev) => {
-      const next = { ...prev };
-      delete next[selectedPlayerId];
-      return next;
-    });
-
-    setSelectedPlayerId(originalId);
   };
 
   const removeLastArrow = () => {
@@ -1897,15 +1858,6 @@ export default function VolleyballTacticsBoardApp() {
                 </div>
               </div>
             </div>
-
-            {/* 「元に戻す」ボタンを追加: 選手が交代選手の場合に有効 */}
-            {!isBasicPattern && substitutions[selectedPlayerId] && (
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <Button variant="outline" onClick={handleUndoSubstitution}>
-                  元に戻す
-                </Button>
-              </div>
-            )}
 
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
               <div className="font-semibold text-slate-800">試合設定</div>
